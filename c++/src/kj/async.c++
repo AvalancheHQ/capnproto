@@ -3364,6 +3364,7 @@ void throwMultipleCoCaptureInvocations() {
   KJ_FAIL_REQUIRE("Attempted to invoke CaptureForCoroutine functor multiple times");
 }
 
+
 }  // namespace _ (private)
 
 }  // namespace kj

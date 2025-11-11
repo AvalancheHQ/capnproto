@@ -26,6 +26,7 @@
 
 #pragma once
 
+#include "kj/common.h"
 #ifndef KJ_ASYNC_H_INCLUDED
 #error "Do not include this directly; include kj/async.h."
 #include "async.h"  // help IDE parse this file
@@ -2259,8 +2260,105 @@ struct coroutine_traits<kj::Promise<T>, Args...> {
 // deallocated when the frame does.
 
 namespace kj::_ {
+class CoroutineAllocator;
+}
+
+namespace kj {
+class CoroutineStack {
+  template <typename... Args>
+  static constexpr bool hasStack = (kj::isSameType<Args, CoroutineStack &>() || ...);
+
+  template <typename X> 
+  static constexpr CoroutineStack* tryGetStack(X &&) { return nullptr; }
+
+  static constexpr CoroutineStack* tryGetStack(CoroutineStack &stack) { return &stack; }
+
+  template <typename... Args> static constexpr CoroutineStack& getStack(Args &&...args) {
+    CoroutineStack* stack = nullptr;
+    ((stack = tryGetStack(args)) || ...);
+    return *stack;
+  }
+
+  struct Chunk {
+    size_t offset = 0;
+    kj::byte bytes[16 * 1024];
+
+    kj::byte *begin() { return bytes; }
+    kj::byte *end() { return bytes + size(); }
+
+    size_t size() { return sizeof(bytes); };
+
+    kj::byte *alloc(size_t n) {
+      KJ_IREQUIRE(offset + n < size(), "not implemented");
+      auto ptr = bytes + offset;
+      offset += n;
+      // ASAN_UNPOISON_MEMORY_REGION(ptr, size);
+      return ptr;
+    }
+
+    void free(kj::byte *ptr, size_t n) {
+      KJ_IREQUIRE(ptr + n == bytes + offset);
+      offset -= n;
+    }
+  };
+
+  Chunk chunk;
+
+  friend class kj::_::CoroutineAllocator;
+};
+}
+
+namespace kj::_ {
 
 namespace stdcoro = KJ_COROUTINE_STD_NAMESPACE;
+
+class CoroutineAllocator {
+private:
+
+  struct Frame {
+    size_t dataSize;
+    CoroutineStack::Chunk* chunk;
+    kj::byte data[];
+
+    inline constexpr kj::byte *dataBegin() { return data; }
+
+    inline constexpr size_t allocSize() { return sizeof(Frame) + dataSize; }
+    inline constexpr static size_t allocSize(size_t dataSize) { return sizeof(Frame) + dataSize; }
+    inline constexpr static Frame* fromDataPtr(kj::byte* dataPtr) {
+      return reinterpret_cast<Frame *>(dataPtr - sizeof(Frame));
+    }
+  };
+
+
+  template <typename... Args>
+  static inline kj::byte* alloc(std::size_t frameSize, Args&&... args) {
+    auto allocSize = Frame::allocSize(frameSize);
+    Frame* frame;
+
+    if constexpr (CoroutineStack::hasStack<Args...>) {
+      auto& chunk = CoroutineStack::getStack(args...).chunk;
+      frame = reinterpret_cast<Frame *>(chunk.alloc(allocSize));
+      frame->chunk = &chunk; 
+    } else {
+      frame = reinterpret_cast<Frame *>(operator new[](allocSize));
+      frame->chunk = nullptr;
+    }
+
+    frame->dataSize = frameSize;
+    return frame->dataBegin();
+  }
+
+  static inline void free(kj::byte* dataPtr) { 
+    auto frame = Frame::fromDataPtr(dataPtr);
+    if (frame->chunk) {
+      frame->chunk->free(reinterpret_cast<kj::byte*>(frame), frame->allocSize());
+    } else {
+      operator delete[] (reinterpret_cast<kj::byte*>(frame), frame->allocSize());
+    }
+  }
+
+  friend class CoroutineBase;
+};
 
 class CoroutineBase: public PromiseNode,
                      public Event {
@@ -2304,6 +2402,15 @@ public:
   // Used in Awaiter implementations to optimize certain immediately-ready promise awaits.
   bool canImmediatelyResume() {
     return hasSuspendedAtLeastOnce && isNext();
+  }
+
+  template <typename... Args>
+  inline void* operator new(std::size_t frameSize, Args&&... args) {
+    return CoroutineAllocator::alloc(frameSize, args...);
+  }
+
+  inline void operator delete(void* framePtr) { 
+    CoroutineAllocator::free(static_cast<kj::byte*>(framePtr));
   }
 
 protected:

@@ -161,6 +161,27 @@ static void bm_Coro_Pow2_20(benchmark::State &state) {
 
 BENCHMARK(bm_Coro_Pow2_20);
 
+
+kj::Promise<size_t> coroStackPow2(kj::CoroutineStack& stack, size_t i) {
+  if (i == 0)
+    co_return 1;
+  co_return (co_await coroStackPow2(stack, i - 1)) << 1;
+}
+
+static void bm_CoroStack_Pow2_20(benchmark::State &state) {
+  // Benchmark waiting for an immediate promise.
+  kj::EventLoop loop;
+  kj::WaitScope waitScope(loop);
+
+  kj::CoroutineStack stack;
+  for (auto _ : state) {
+    auto promise = coroStackPow2(stack, 20);
+    KJ_REQUIRE(promise.wait(waitScope) == 1ll << 20);
+  }
+}
+
+BENCHMARK(bm_CoroStack_Pow2_20);
+
 ///////////////////////////////
 // shift benchmarks mean to benchmark deep promise chains ending on paf.
 
