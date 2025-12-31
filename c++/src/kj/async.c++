@@ -3304,11 +3304,6 @@ PromiseAwaiterBase::~PromiseAwaiterBase() noexcept(false) {
   KJ_IF_SOME(coroutine, maybeCoroutine) {
     coroutine.clearPromiseNodeForTrace();
   }
-
-  unwindDetector.catchExceptionsIfUnwinding([this]() {
-    // No need to check for a moved-from state, node will just ignore the nullification.
-    node = nullptr;
-  });
 }
 
 void PromiseAwaiterBase::awaitResumeImpl(ExceptionOrValue& result, void* awaitedAt) {
@@ -3324,11 +3319,20 @@ void PromiseAwaiterBase::awaitResumeImpl(ExceptionOrValue& result, void* awaited
     // comment there).
     exception.addTrace(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(awaitedAt) - 1));
 
+    try {
+      node = nullptr;
+    } catch (...) {
+      // see UnwindDetector::catchThrownExceptionAsSecondaryFault
+      getCaughtExceptionAsKj();
+    }
+
     // Pass kj::maxValue for ignoreCount here so that `throwFatalException()` doesn't try to
     // extend the stack trace. There's no point in extending the trace beyond the single frame we
     // added above, as the rest of the trace will always be async framework stuff that no one wants
     // to see.
     kj::throwFatalException(kj::mv(exception), kj::maxValue);
+  } else {
+    node = nullptr;
   }
 }
 
