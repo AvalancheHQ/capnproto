@@ -19,4 +19,11 @@ register_toolchains(
     dev_dependency = True,
 )
 
-bazel_dep(name = "codspeed_google_benchmark_compat", version = "2.0.0", repo_name = "google_benchmark")
+bazel_dep(name = "codspeed_google_benchmark_compat", repo_name = "google_benchmark")
+
+git_override(
+    module_name = "codspeed_google_benchmark_compat",
+    remote = "https://github.com/CodSpeedHQ/codspeed-cpp.git",
+    branch = "cod-1963-codspeed-cpp-starts-valgrind-twice",
+    strip_prefix = "google_benchmark",
+)
